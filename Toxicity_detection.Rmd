@@ -1,0 +1,507 @@
+---
+title: "HateNet"
+author: "Aske Bredahl Nielsen & Johan Horsmans"
+date: "22 apr 2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+load data and packages 
+```{r}
+#Load data and packages
+set.seed(46)
+library(pacman, qdap)
+p_load(tidyverse, stringr, tm, ggplot2, GGally, e1071, caret,stopwords, stringi, tm, SnowballC,stringr,fastmatch)
+
+setwd("D:/4. sem/SocCultDyn/SocCult_exam")
+
+# training data
+danish_data <- read_delim("D:/4. sem/SocCultDyn/SocCult_exam/dkhate/oe20da_data/offenseval-da-training-v1.tsv", 
+    "\t", escape_double = FALSE, trim_ws = TRUE)
+
+# test data
+danish_data_test <- read_delim("D:/4. sem/SocCultDyn/SocCult_exam/dkhate/oe20da_data/offenseval-da-test-v1.tsv","\t", escape_double = FALSE, trim_ws = TRUE)
+
+```
+
+Trim the data:
+- Remove stopwords
+- Remove numbers
+- Stem words
+```{r}
+set.seed(46)
+
+# Remove stopwords
+stopwords_regex = paste(stopwords("da",source= "snowball"), collapse = '\\b|\\b')
+stopwords_regex = paste0('\\b', stopwords_regex, '\\b')
+danish_data$clean_tweet = stringr::str_replace_all(danish_data$tweet, stopwords_regex, '')
+
+# remove numbers
+danish_data$clean_tweet <-  removeNumbers(danish_data$clean_tweet)
+
+# Stem words
+danish_data$clean_tweet <-  wordStem(danish_data$clean_tweet, language = "danish")
+
+
+#repeat for test data
+stopwords_regex = paste(stopwords("da",source= "snowball"), collapse = '\\b|\\b')
+stopwords_regex = paste0('\\b', stopwords_regex, '\\b')
+danish_data_test$clean_tweet = stringr::str_replace_all(danish_data_test$tweet, stopwords_regex, '')
+
+# remove numbers
+danish_data_test$clean_tweet <-  removeNumbers(danish_data_test$clean_tweet)
+
+# Stem words
+danish_data_test$clean_tweet <-  wordStem(danish_data_test$clean_tweet, language = "danish")
+
+# remove punctuation
+danish_data_test$clean_tweet<-removePunctuation(danish_data_test$clean_tweet)
+danish_data$clean_tweet<-removePunctuation(danish_data$clean_tweet)
+```
+
+Find swear words
+```{r}
+set.seed(46)
+
+# list of swear words
+bandeord<-c("trunte","lort","lortet","aber","fucking","fuck","luder","kælling","fanden","neger","pisse","sgu","svin","bøsserøven","bøsserøv","bøsserøve","fjolser","kraftedeme","kællinger","ludere","negere","lorte","skid","skide","møgunger","møgsæk","helvede","perker","perkere","perkerne","kneppet","negerne","luderne","kællingerne","trunter","trunterne","satan","smatso","bitches","bitch","fandeme","bullshit","pis","røv","shit","kæft","bøsse","idiot","idioter","idioterne","pikslikker","fandme","fucke","djævel","djævle","fjols","møg","faggot","pokker","bindegal","satme","kraftædme","kraftedme","stodder","skøge","spasser","mær")
+
+
+tweets<-danish_data$tweet
+
+count.kw <- function(tweets) sum(sapply(bandeord, grepl, x=tolower(tweets), fixed=TRUE))
+
+bandeord_train<-c()
+
+for (i in 1:nrow(danish_data)){
+  bandeord_train[i]<-count.kw(danish_data$tweet[i])
+}
+
+bandeord_train
+danish_data$swear_words <- bandeord_train
+
+### repeat for test set ###
+
+tweets1<-danish_data_test$tweet
+
+count.kw <- function(tweets1) sum(sapply(bandeord, grepl, x=tolower(tweets1), fixed=TRUE))
+
+bandeord_test<-c()
+
+for (i in 1:nrow(danish_data_test)){
+  bandeord_test[i]<-count.kw(danish_data_test$tweet[i])
+}
+
+danish_data_test$swear_words <- bandeord_test
+```
+
+Create variables with linguistic features for both training and test set
+- amount of words in each comment
+- average length of words
+- ratio of capitalized letters
+```{r}
+set.seed(46)
+
+danish_data$sentence_length <- 1
+split<-c()
+
+# make a column for length of comment
+for (i in 1:nrow(danish_data)){
+split[i] <- str_split(danish_data$tweet[i], " ")
+danish_data$sentence_length[i] <- length(split[[i]])
+}
+
+# make a column for average length of words
+danish_data$mean_word_length <- 1
+string_length <- c()
+word_length <- c()
+test <- c()
+no_pct_tweet <- removePunctuation(danish_data$tweet)
+
+for (i in 1:nrow(danish_data)){
+string_length[i] <- str_split(no_pct_tweet[i], " ")
+word_length <- c()
+  for (k in 1:length(string_length[[i]])){
+    word_length[k] <-  nchar(string_length[[i]][k])
+  }
+danish_data$mean_word_length[i] <- sum(word_length) / length(string_length[[i]])
+}
+
+
+# make a column for number of capitalized letters
+ratio <- sapply(regmatches(danish_data$tweet, gregexpr("[A-Z]", danish_data$tweet, perl=TRUE)), length) /
+  sapply(regmatches(danish_data$tweet, gregexpr("[a-z]", danish_data$tweet, perl=TRUE)), length)
+
+ratio <- ifelse(ratio == Inf, 1, ratio)
+danish_data$caps_ratio <- ratio
+
+
+# get sentiment score for each comment using SENTIDA
+danish_data$Sentiment_score <- 1
+danish_data <- na.omit(danish_data)
+
+for (i in 1:nrow(danish_data)){
+  danish_data$Sentiment_score[i] <- Sentida::sentida(danish_data$tweet[i], output = "total")
+}
+
+
+### Repeat for test set ###
+
+
+danish_data_test$sentence_length <- 1 
+
+# make a column for length of comment
+for (i in 1:nrow(danish_data_test)){
+split[i] <- str_split(danish_data_test$tweet[i], " ")
+danish_data_test$sentence_length[i] <- length(split[[i]])
+}
+
+# make a column for average length of words
+danish_data_test$mean_word_length <- 1
+string_length <- c()
+word_length <- c()
+test <- c()
+no_pct_tweet <- removePunctuation(danish_data_test$tweet)
+
+for (i in 1:nrow(danish_data_test)){
+string_length[i] <- str_split(no_pct_tweet[i], " ")
+word_length <- c()
+  for (k in 1:length(string_length[[i]])){
+    word_length[k] <-  nchar(string_length[[i]][k])
+  }
+danish_data_test$mean_word_length[i] <- sum(word_length) / length(string_length[[i]])
+}
+
+
+# make a column for number of capitalized letters
+ratio <- sapply(regmatches(danish_data_test$tweet, gregexpr("[A-Z]", danish_data_test$tweet, perl=TRUE)), length) /
+  sapply(regmatches(danish_data_test$tweet, gregexpr("[a-z]", danish_data_test$tweet, perl=TRUE)), length)
+
+ratio <- ifelse(ratio == Inf, 1, ratio)
+danish_data_test$caps_ratio <- ratio
+
+
+# get sentiment score for each comment using SENTIDA
+if(!require("devtools")) install.packages("devtools")
+devtools::install_github("Guscode/Sentida")
+library(Sentida)
+
+danish_data_test$Sentiment_score <- 1
+danish_data_test <- na.omit(danish_data_test)
+
+for (i in 1:nrow(danish_data_test)){
+  danish_data_test$Sentiment_score[i] <- Sentida::sentida(danish_data_test$tweet[i], output = "total")
+}
+
+```
+
+Visualization of lingustic features
+```{r}
+
+# barplots for the distribution of off/not off in the training and test set
+bar1 <- ggplot(danish_data, aes(danish_data$subtask_a))+
+  geom_bar(aes(fill = danish_data$subtask_a))+
+  xlab("Category")+
+  ggtitle("Distribution of offensive and not offensive comments in the training set")
+
+bar2 <- ggplot(danish_data_test, aes(danish_data_test$subtask_a))+
+  geom_bar(aes(fill = danish_data_test$subtask_a))+
+  xlab("Category")+
+  ggtitle("Distribution of offensive and not offensive comments in the test set")
+  
+gridExtra::grid.arrange(bar1, bar2)
+
+
+gridExtra::grid.arrange(
+danish_data %>% 
+  ggplot(aes(danish_data$swear_words))+
+  geom_density()+
+  xlab("Number of swear words"),
+
+danish_data %>% 
+  ggplot(aes(danish_data$sentence_length))+
+  geom_density()+
+  xlab("Length of comment"),
+
+danish_data %>% 
+  ggplot(aes(danish_data$mean_word_length))+
+  geom_density()+
+  xlab("Mean length of words"),
+
+danish_data %>% 
+  ggplot(aes(danish_data$caps_ratio))+
+  geom_density()+
+  xlab("Caps ratio"),
+
+danish_data %>% 
+  ggplot(aes(danish_data$Sentiment_score))+
+  geom_density()+
+  xlab("Sentiment score"),
+
+top = "Distributions of linguistic features in the training data"
+
+)
+
+```
+
+
+glmnet model with DTM as predictor + prediction on test set
+```{r}
+set.seed(46)
+
+library(tidyverse)
+library(text2vec)
+library(data.table)
+library(magrittr)
+library(glmnet)
+
+
+danish_data$subtask_a<-as.factor(danish_data$subtask_a)
+danish_data$subtask_a<-as.numeric(danish_data$subtask_a)
+
+danish_data$subtask_a[danish_data$subtask_a==1]<-0
+danish_data$subtask_a[danish_data$subtask_a==2]<-1
+
+danish_data<-as.data.table(danish_data)
+
+danish_data<-na.omit(danish_data)
+
+danish_data$id<-as.character(danish_data$id)
+
+# define functions for vectorization 
+prep_fun = tolower
+tok_fun = word_tokenizer
+
+# Tokenize the tweets
+it_train = itoken(danish_data$clean_tweet, 
+                  preprocessor = prep_fun, 
+                  tokenizer = tok_fun, 
+                  ids = danish_data$id, 
+                  progressbar = T)
+
+# create vocabulary for the training set
+vocab_train = create_vocabulary(it_train)
+train_tokens = tok_fun(prep_fun(danish_data$clean_tweet))
+
+
+vocab_train = create_vocabulary(it_train)
+vocab_train
+
+vectorizer = vocab_vectorizer(vocab_train)
+
+dtm_train = create_dtm(it_train, vectorizer)
+
+dim(dtm_train)
+
+identical(rownames(dtm_train), danish_data$id)
+
+# modelling
+library(glmnet)
+NFOLDS = 4
+
+glmnet_classifier = cv.glmnet(x = dtm_train, y = danish_data[['subtask_a']], 
+                              family = 'binomial', 
+                              # L1 penalty
+                              alpha = 1,
+                              # interested in the area under ROC curve
+                              type.measure = "auc",
+                              # 5-fold cross-validation
+                              nfolds = NFOLDS,
+                              # high value is less accurate, but has faster training
+                              thresh = 1e-3,
+                              # again lower number of iterations for faster training
+                              maxit = 1e3))
+
+print(paste("max AUC =", round(max(glmnet_classifier$cvm), 4)))
+
+#####
+
+
+#####NY TEST
+# Note that most text2vec functions are pipe friendly!
+
+danish_data_test$subtask_a<-as.factor(danish_data_test$subtask_a)
+danish_data_test$subtask_a<-as.numeric(danish_data_test$subtask_a)
+
+danish_data_test$subtask_a[danish_data_test$subtask_a==1]<-0
+danish_data_test$subtask_a[danish_data_test$subtask_a==2]<-1
+
+danish_data_test<-as.data.table(danish_data_test)
+
+danish_data_test$id<-as.character(danish_data_test$id)
+
+
+it_test = tok_fun(prep_fun(danish_data_test$clean_tweet))
+
+it_test = itoken(it_test, ids = danish_data_test$id, progressbar = FALSE)
+
+
+dtm_test = create_dtm(it_test, vectorizer)
+
+#PREDICT
+glmnet_probs <- predict(glmnet_classifier, dtm_test, type = 'response')[,1]
+glmnet:::auc(danish_data_test$subtask_a, preds)
+
+glmnet_probs
+
+glmnet_preds <- ifelse(glmnet_probs > 0.5, 1, 0)
+
+danish_data_test$glmnet_preds <- glmnet_preds
+danish_data_test$glmnet_probs <- glmnet_probs
+```
+
+
+Naive Bayes model with lingustic features as predictions
+```{r}
+set.seed(46)
+
+p_load(caretEnsemble, klaR)
+danish_data$subtask_a <-  as.factor(danish_data$subtask_a)
+
+nb_model <- naiveBayes(danish_data$subtask_a ~ swear_words + sentence_length + mean_word_length + caps_ratio + Sentiment_score, laplace = 1,
+                        data = danish_data)
+
+
+danish_data_test$subtask_a <- as.factor(danish_data_test$subtask_a)
+
+confusionMatrix(nb_predict$`2`, danish_data_test$subtask_a)
+
+danish_data_test$nb_preds <- predict(nb_model, danish_data_test, type = "class")
+danish_data_test$nb_probs <- predict(nb_model, danish_data_test, type = "raw")[,2]
+
+```
+
+
+Naive Bayes model with bag-of-words
+```{r}
+set.seed(46)
+
+library(tm)
+library(pacman)
+p_load(RTextTools,e1071,dplyr,caret)
+
+#TRAIN
+danish_data$subtask_a<-as.factor(danish_data$subtask_a)
+danish_data$id<-as.character(danish_data$id)
+
+#TEST
+danish_data_test$id<-as.character(danish_data_test$id)
+danish_data_test$subtask_a<-as.factor(danish_data_test$subtask_a)
+
+#Train
+corpus_train <- Corpus(VectorSource(danish_data$clean_tweet))
+
+#Test
+corpus_test <- Corpus(VectorSource(danish_data_test$clean_tweet))
+
+#Train
+corpus.clean_train <- corpus_train %>%
+  tm_map(content_transformer(tolower)) %>% 
+  tm_map(removePunctuation) %>%
+  tm_map(removeNumbers) %>%
+  tm_map(stripWhitespace)
+
+#Test
+corpus.clean_test <- corpus_test %>%
+  tm_map(content_transformer(tolower)) %>% 
+  tm_map(removePunctuation) %>%
+  tm_map(removeNumbers) %>%
+  tm_map(stripWhitespace)
+
+#Train
+dtm_train <- DocumentTermMatrix(corpus.clean_train)
+
+dim(dtm_train)
+
+#Test
+dtm_test <- DocumentTermMatrix(corpus.clean_test)
+
+dim(dtm_test)
+
+
+convert_count <- function(x) {
+  y <- ifelse(x > 0, 1,0)
+  y <- factor(y, levels=c(0,1), labels=c("No", "Yes"))
+  y
+}
+
+#Train
+trainNB <- apply(dtm_train, 2, convert_count)
+
+#Test
+testNB <- apply(dtm_test, 2, convert_count)
+
+# modelling
+classifier <- naiveBayes(trainNB, danish_data$subtask_a, laplace = 1, type = c("class", "raw"))
+
+
+
+# get predictions
+pred <- predict(classifier, newdata=testNB, type = "raw")
+pred_class <- predict(classifier, newdata=testNB, type = "class")
+
+table("Predictions"= pred_class,  "Actual" = danish_data_test$subtask_a)
+summary(pred[,1])
+danish_data_test$nb_BoW_probs <- pred[,2]
+danish_data_test$nb_BoW_preds <- pred_class
+```
+
+
+Ensemble models: averaging and majority vote
+```{r}
+set.seed(46)
+
+# Ensemble averaging
+
+danish_data_test$avg_preds <- 1
+danish_data_test$avg_preds <- as.numeric(danish_data_test$avg_preds)
+
+for (i in 1:nrow(danish_data_test)){
+  danish_data_test$ensemble_probs[i] <- (danish_data_test$glmnet_probs[i] + danish_data_test$nb_BoW_probs[i] + danish_data_test$nb_probs[i]) / 3
+  danish_data_test$avg_preds[i] <- ifelse(danish_data_test$ensemble_probs[i] > 0.5, 1, 0)
+}
+
+
+# Majority vote
+danish_data_test$majority_vote <- as.factor(
+        ifelse(danish_data_test$glmnet_preds== 1 & danish_data_test$nb_preds == 1,1,
+        ifelse(danish_data_test$glmnet_preds== 1 & danish_data_test$nb_BoW_preds == 1, 1,
+        ifelse(danish_data_test$nb_preds == 1 & danish_data_test$nb_BoW_preds== 1, 1, 0))))
+
+```
+
+
+model evaluation, F1-score
+```{r}
+set.seed(46)
+
+p_load(MLmetrics)
+
+# GLMnet evaluation
+caret::confusionMatrix(as.factor(danish_data_test$glmnet_preds), as.factor(danish_data_test$subtask_a), positive = "1")
+m1 <- F1_Score(danish_data_test$subtask_a, danish_data_test$glmnet_preds, positive = 1)
+
+# Naïve bayes - linguistic features evaluation
+caret::confusionMatrix(danish_data_test$nb_preds, as.factor(danish_data_test$subtask_a), positive = "1")
+m2 <- F1_Score(danish_data_test$subtask_a, danish_data_test$nb_preds, positive = 1)
+
+# Naïve bayes - bag of words
+caret::confusionMatrix(danish_data_test$nb_BoW_preds, as.factor(danish_data_test$subtask_a), positive = "1")
+m3 <- F1_Score(danish_data_test$subtask_a, danish_data_test$nb_BoW_preds, positive = 1)
+
+danish_data_test$avg_preds <- as.factor(danish_data_test$avg_preds)
+# Evaluation of ensemble averaging
+caret::confusionMatrix(danish_data_test$avg_preds, as.factor(danish_data_test$subtask_a), positive = "1")
+m4 <- F1_Score(danish_data_test$subtask_a, danish_data_test$avg_preds, positive = 1)
+
+# Evaluation of majority vote
+caret::confusionMatrix(danish_data_test$majority_vote, as.factor(danish_data_test$subtask_a), positive = "1")
+m5 <- F1_Score(danish_data_test$subtask_a, danish_data_test$majority_vote, positive = 1)
+
+results <- tibble(m1, m2, m3, m4, m5)
+results
+
+```
